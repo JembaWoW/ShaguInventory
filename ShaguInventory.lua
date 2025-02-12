@@ -1,8 +1,12 @@
 local tmpCount = 0
 local SuperWoWDetected = false
 local SuperWoWExportLastRun = 0
+local firstRun = true
+local firstRunOutput = ""
 
-  local function serialize(tbl, comp, name, spacing)
+-- This function is what's causing the lag.
+--[[
+  function serialize(tbl, comp, name, spacing)
     local spacing = spacing or ""
     local match = nil
     local tname = ( spacing == "" and "" or "[\"" ) .. name .. ( spacing == "" and "" or "\"]" )
@@ -29,8 +33,45 @@ local SuperWoWExportLastRun = 0
     str = str .. spacing .. "}" .. ( spacing == "" and "" or "," ) .. "\n"
     return match and str or nil
   end
+]]--
 
-  local function compress(input)
+local function serialize(tbl, name, firstRun)
+  local start = GetTime()
+	local output = name.." = { "
+	for key1, val1 in pairs(tbl) do
+		--player
+		if firstRun or (not firstRun and key1 == UnitName("player")) then
+          if type(val1) == "table" then
+              output = output..'["'..key1..'"] = { '
+              --container
+              for key2, val2 in pairs(val1) do
+                  if type(val2) == "table" then
+                      output = output..'["'..key2..'"] = { '
+                      --item
+                      for key3, val3 in pairs(val2) do
+                          output = output..'["'..key3..'"] = '..val3..','
+                      end
+                      output = output..' }, '
+                  end
+              end
+              output = output..' }, '
+          end
+		end
+	end
+	output = output..' }'
+    if not firstRun then
+        output = firstRunOutput..";"..output
+    else
+      firstRunOutput = output
+    end
+    --print("serialize took: "..GetTime()-start)
+	return output
+end
+
+--[[
+
+local function compress(input)
+    local start = GetTime()
     -- based on Rochet2's lzw compression
     if type(input) ~= "string" then
       return nil
@@ -86,10 +127,12 @@ local SuperWoWExportLastRun = 0
     if  len <= resultlen then
       return "u"..input
     end
+    --print("compress took: "..GetTime()-start)
     return table.concat(result)
   end
 
-  local function decompress(input)
+local function decompress(input)
+    local start = GetTime()
     -- based on Rochet2's lzw compression
     if type(input) ~= "string" or strlen(input) < 1 then
       return nil
@@ -157,10 +200,12 @@ local SuperWoWExportLastRun = 0
       end
       last = code
     end
+        --print("decompress took: "..GetTime()-start)
     return table.concat(result)
   end
 
-  local function enc(to_encode)
+local function enc(to_encode)
+  local start = GetTime()
     local index_table = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     local bit_pattern = ''
     local encoded = ''
@@ -200,11 +245,12 @@ local SuperWoWExportLastRun = 0
         count = 0
       end
     end
-
+           --print("enc took: "..GetTime()-start)
     return string.sub(encoded, 1, -1 - string.len(trailing)) .. trailing
   end
 
-  local function dec(to_decode)
+local function dec(to_decode)
+   local start = GetTime()
     local index_table = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
     local padded = gsub(to_decode,"%s", "")
     local unpadded = gsub(padded,"=", "")
@@ -244,18 +290,25 @@ local SuperWoWExportLastRun = 0
     if (padding_length == 1 or padding_length == 2) then
       decoded = string.sub(decoded,1,-2)
     end
-
+  --print("dec took: "..GetTime()-start)
     return decoded
   end
 
+]]--
 
-local function ShaguInventorySuperWoWExport(table)
+
+local function ShaguInventorySuperWoWExport(table,logout)
 
   -- Export via SuperWoW, if it's detected. No than once per min.
   if SuperWoWDetected then
-    if GetTime() >= (SuperWoWExportLastRun + 60) then
+  if UnitAffectingCombat("player") then return end
+    if GetTime() >= (SuperWoWExportLastRun + 60) or logout then
+      local name = "exportedInventory"
+      if firstRun then name = "exportedInventoryFull" end
       SuperWoWExportLastRun = GetTime()
-      local compressed = enc(compress(serialize(table,nil, "exportedInventory")))
+      --local compressed = enc(compress(serialize(table, name, firstRun)))
+      local compressed = serialize(table, name, firstRun)
+      firstRun = false
       ExportFile("ShaguInventory",compressed)
     end
   end
@@ -272,19 +325,33 @@ frame:SetScript("OnEvent",function(self,event,...)
 		local import = ImportFile("ShaguInventory")
 
       --Load the table
-      local uncompressed = decompress(dec(import))
+      --local uncompressed = decompress(dec(import))
+      local uncompressed = import
       local ImportConfig, error = loadstring(uncompressed)
       if not error and uncompressed ~= "" then
           ImportConfig()
           if not InventoryCounterDB then InventoryCounterDB = {} end
-          for playerKey,containerVal in pairs(exportedInventory) do
-              for containerKey,itemVal in pairs(containerVal) do
-                  if not InventoryCounterDB[playerKey] then InventoryCounterDB[playerKey] = { } end
-                  if not InventoryCounterDB[playerKey][containerKey] then InventoryCounterDB[playerKey][containerKey] = {} end
-                  for itemKey,itemAmount in pairs(itemVal) do
-                      InventoryCounterDB[playerKey][containerKey][itemKey] = itemAmount
-                  end
-              end
+          if exportedInventoryFull then
+            for playerKey,containerVal in pairs(exportedInventoryFull) do
+                for containerKey,itemVal in pairs(containerVal) do
+                    if not InventoryCounterDB[playerKey] then InventoryCounterDB[playerKey] = { } end
+                    if not InventoryCounterDB[playerKey][containerKey] then InventoryCounterDB[playerKey][containerKey] = {} end
+                    for itemKey,itemAmount in pairs(itemVal) do
+                        InventoryCounterDB[playerKey][containerKey][itemKey] = itemAmount
+                    end
+                end
+            end
+          end
+          if exportedInventory then
+            for playerKey,containerVal in pairs(exportedInventory) do
+                for containerKey,itemVal in pairs(containerVal) do
+                    if not InventoryCounterDB[playerKey] then InventoryCounterDB[playerKey] = { } end
+                    if not InventoryCounterDB[playerKey][containerKey] then InventoryCounterDB[playerKey][containerKey] = {} end
+                    for itemKey,itemAmount in pairs(itemVal) do
+                        InventoryCounterDB[playerKey][containerKey][itemKey] = itemAmount
+                    end
+                end
+            end
           end
       end
 	end
@@ -294,7 +361,7 @@ end)
 local logoutframe=CreateFrame("Frame")
 logoutframe:RegisterEvent("PLAYER_LOGOUT")
 logoutframe:SetScript("OnEvent",function(self,event,...)
-  ShaguInventorySuperWoWExport(InventoryCounterDB)
+  ShaguInventorySuperWoWExport(InventoryCounterDB,"logout")
 end)
 
 function resetDB()
